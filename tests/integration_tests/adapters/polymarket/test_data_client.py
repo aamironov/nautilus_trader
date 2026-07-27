@@ -33,6 +33,7 @@ from nautilus_trader.adapters.polymarket.schemas.book import PolymarketBookSnaps
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketQuote
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketQuotes
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketTickSizeChange
+from nautilus_trader.adapters.polymarket.schemas.book import PolymarketTrade
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -46,6 +47,7 @@ from nautilus_trader.model.currencies import USDC
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
+from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.identifiers import InstrumentId
@@ -259,7 +261,7 @@ def test_pending_drops_price_change_until_snapshot(event_loop) -> None:
     assert ask_price is not None
     assert bid_price.precision == ask_price.precision == 2
 
-    assert any(isinstance(item, OrderBookDeltas) for item in client.emitted)
+    assert not any(isinstance(item, OrderBookDeltas) for item in client.emitted)
     quote_emitted = next(
         (item for item in client.emitted if isinstance(item, QuoteTick)),
         None,
@@ -267,6 +269,90 @@ def test_pending_drops_price_change_until_snapshot(event_loop) -> None:
     assert quote_emitted is not None
     assert quote_emitted.bid_price.precision == 2
     assert quote_emitted.ask_price.precision == 2
+
+
+def test_quote_only_subscription_does_not_publish_order_book_deltas(event_loop) -> None:
+    client, _provider = _make_data_client(event_loop)
+    instrument = _make_binary_option("0.01")
+    client._cache.add_instrument(instrument)
+    client._add_subscription_quote_ticks(instrument.id)
+
+    snapshot = _build_snapshot(("0.45", "0.49", "0.51", "0.55"))
+    client._handle_book_snapshot(instrument=instrument, ws_message=snapshot)
+
+    assert any(isinstance(item, QuoteTick) for item in client.emitted)
+    assert not any(isinstance(item, OrderBookDeltas) for item in client.emitted)
+
+    client.emitted.clear()
+    price_change = PolymarketQuotes(
+        market="0xMARKET",
+        price_changes=[
+            PolymarketQuote(
+                asset_id="0xASSET",
+                price="0.49",
+                side=PolymarketOrderSide.BUY,
+                size="20",
+                hash="",
+            ),
+        ],
+        timestamp="1700000002000",
+    )
+    client._handle_quote(
+        instrument=instrument,
+        ws_message=price_change,
+        price_change=price_change.price_changes[0],
+    )
+
+    assert any(isinstance(item, QuoteTick) for item in client.emitted)
+    assert not any(isinstance(item, OrderBookDeltas) for item in client.emitted)
+
+
+def test_unsubscribed_snapshot_is_dropped_without_recreating_book(event_loop) -> None:
+    client, _provider = _make_data_client(event_loop)
+    instrument = _make_binary_option("0.01")
+    client._cache.add_instrument(instrument)
+
+    snapshot = _build_snapshot(("0.45", "0.49", "0.51", "0.55"))
+    client._handle_book_snapshot(instrument=instrument, ws_message=snapshot)
+
+    assert client.emitted == []
+    assert instrument.id not in client._local_books
+
+
+def test_order_book_subscription_publishes_order_book_deltas(event_loop) -> None:
+    client, _provider = _make_data_client(event_loop)
+    instrument = _make_binary_option("0.01")
+    client._cache.add_instrument(instrument)
+    client._add_subscription_order_book_deltas(instrument.id)
+
+    snapshot = _build_snapshot(("0.45", "0.49", "0.51", "0.55"))
+    client._handle_book_snapshot(instrument=instrument, ws_message=snapshot)
+
+    assert any(isinstance(item, OrderBookDeltas) for item in client.emitted)
+    assert not any(isinstance(item, QuoteTick) for item in client.emitted)
+
+
+def test_quote_only_subscription_does_not_publish_trade_ticks(event_loop) -> None:
+    client, _provider = _make_data_client(event_loop)
+    instrument = _make_binary_option("0.01")
+    client._cache.add_instrument(instrument)
+    client._add_subscription_quote_ticks(instrument.id)
+    trade = PolymarketTrade(
+        market="0xMARKET",
+        asset_id="0xASSET",
+        fee_rate_bps="0",
+        price="0.50",
+        side=PolymarketOrderSide.BUY,
+        size="5",
+        timestamp="1700000002000",
+    )
+
+    client._handle_trade(instrument=instrument, ws_message=trade)
+    assert not any(isinstance(item, TradeTick) for item in client.emitted)
+
+    client._add_subscription_trade_ticks(instrument.id)
+    client._handle_trade(instrument=instrument, ws_message=trade)
+    assert any(isinstance(item, TradeTick) for item in client.emitted)
 
 
 def test_tick_size_change_finer_then_snapshot_clean_transition(event_loop) -> None:

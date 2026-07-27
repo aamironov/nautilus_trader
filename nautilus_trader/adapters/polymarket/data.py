@@ -622,6 +622,11 @@ class PolymarketDataClient(LiveMarketDataClient):
         instrument: BinaryOption,
         ws_message: PolymarketBookSnapshot,
     ) -> None:
+        has_book_sub = self.is_subscribed_order_book_deltas(instrument.id)
+        has_quote_sub = self.is_subscribed_quote_ticks(instrument.id)
+        if not has_book_sub and not has_quote_sub:
+            return
+
         now_ns = self._clock.timestamp_ns()
         deltas = ws_message.parse_to_snapshot(instrument=instrument, ts_init=now_ns)
 
@@ -654,11 +659,19 @@ class PolymarketDataClient(LiveMarketDataClient):
             self._handle_data(quote)
 
     def _handle_deltas(self, instrument: BinaryOption, deltas: OrderBookDeltas) -> None:
-        # Always maintain local book for quote generation
+        # Always maintain the local book because quote-only subscriptions need
+        # it to derive the top of book. Do not publish OrderBookDeltas unless a
+        # downstream consumer explicitly subscribed to them. Publishing these
+        # for quote-only subscriptions doubles the event rate during normal
+        # operation and sends full reconnect snapshots into DataEngine, which
+        # can saturate its bounded data queue.
         book_old = self._local_books.get(instrument.id)
         book_new = OrderBook(instrument.id, book_type=BookType.L2_MBP)
         book_new.apply_deltas(deltas)
         self._local_books[instrument.id] = book_new
+
+        if not self.is_subscribed_order_book_deltas(instrument.id):
+            return
 
         if self._config.compute_effective_deltas and book_old is not None:
             # Compute effective deltas (reduce snapshot based on old and new book states),
@@ -735,7 +748,8 @@ class PolymarketDataClient(LiveMarketDataClient):
         local_book = self._local_books[instrument.id]
         local_book.apply(deltas)
 
-        self._handle_data(deltas)
+        if self.is_subscribed_order_book_deltas(instrument.id):
+            self._handle_data(deltas)
 
         if self.is_subscribed_quote_ticks(instrument.id):
             bid_price = local_book.best_bid_price()
@@ -789,6 +803,11 @@ class PolymarketDataClient(LiveMarketDataClient):
         instrument: BinaryOption,
         ws_message: PolymarketTrade,
     ) -> None:
+        # The market channel can include last-trade events for assets connected
+        # for quote data. Only forward them when trade ticks were requested.
+        if not self.is_subscribed_trade_ticks(instrument.id):
+            return
+
         now_ns = self._clock.timestamp_ns()
         trade = ws_message.parse_to_trade_tick(instrument=instrument, ts_init=now_ns)
         self._handle_data(trade)

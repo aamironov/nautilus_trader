@@ -832,7 +832,10 @@ class PolymarketDataClient(LiveMarketDataClient):
         self._instrument_provider.add(instrument)
         self._cache.add_instrument(instrument)
 
-        self._log.warning(f"Instrument tick size changed: {instrument}")
+        self._log.warning(
+            f"Instrument tick size changed for {instrument.id}: "
+            f"{ws_message.old_tick_size} -> {ws_message.new_tick_size}",
+        )
         self._handle_data(instrument)
 
         # Book epoch transition: see `Tick size change handling` in

@@ -543,6 +543,33 @@ async def test_gamma_markets_deduplicates_condition_ids(mock_clob_client, live_c
 
 
 @pytest.mark.asyncio
+async def test_gamma_omitted_requested_market_is_transient(mock_clob_client, live_clock):
+    config = InstrumentProviderConfig(use_gamma_markets=True)
+    provider = PolymarketInstrumentProvider(
+        client=mock_clob_client,
+        clock=live_clock,
+        config=config,
+    )
+    instrument_id = InstrumentId.from_str(
+        f"{ACTIVE_OPEN_MARKET['condition_id']}-"
+        f"{ACTIVE_OPEN_MARKET['tokens'][0]['token_id']}.POLYMARKET",
+    )
+    transient: set[str] = set()
+
+    with patch(
+        "nautilus_trader.adapters.polymarket.providers.list_markets",
+        new=AsyncMock(return_value=[]),
+    ):
+        await provider.load_ids_async(
+            [instrument_id],
+            transient_condition_ids=transient,
+        )
+
+    assert ACTIVE_OPEN_MARKET["condition_id"] in transient
+    assert provider.find(instrument_id) is None
+
+
+@pytest.mark.asyncio
 async def test_load_ids_chunks_at_100_condition_ids(mock_clob_client, live_clock):
     """
     Gamma's `condition_ids=` query accepts at most 100 IDs per request, so the provider

@@ -254,6 +254,19 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                     outcome = token_info["outcome"]
                     self._load_instrument(normalized_market, token_id, outcome)
 
+        if transient_condition_ids is not None:
+            missing_condition_ids = {
+                get_polymarket_condition_id(instrument_id)
+                for instrument_id in instrument_ids
+                if self.find(instrument_id) is None
+            }
+            if missing_condition_ids:
+                transient_condition_ids.update(missing_condition_ids)
+                self._log.warning(
+                    f"Gamma omitted {len(missing_condition_ids)} requested market(s); "
+                    "classifying them as transient for auto-load retry",
+                )
+
         self._log.info(f"Loaded {total_loaded} markets using Gamma API")
 
     async def _load_ids_using_clob_api(

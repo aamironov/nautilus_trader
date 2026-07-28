@@ -2069,6 +2069,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
     def _handle_ws_message(self, raw: bytes) -> None:
         try:
+            if raw.strip().upper() == b"PONG":
+                # Polymarket acknowledges its application-level text PING with
+                # plain text, not a user-channel JSON event.
+                return
             if self._config.log_raw_ws_messages:
                 self._log.info(
                     str(json.dumps(msgspec.json.decode(raw), indent=4)),
